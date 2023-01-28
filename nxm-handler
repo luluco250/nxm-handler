@@ -1,0 +1,145 @@
+#!/bin/bash
+
+# This script tries to find an instance of Mod Organizer 2 running on Wine/Proton,
+# then calls it again passing the nxm:// link so it starts downloading.
+
+main() {
+	local title
+	local url
+	local mo2_pid
+	local mo2_cmdline
+	local mo2_env_vars
+	local success
+
+	title=$(basename "$0")
+	url=$1
+
+	if [[ -z "$url" ]]; then
+		message_box error 'No URL provided.'
+		return 1
+	fi
+
+	mo2_pid=$(find_mo2)
+	success=$?
+
+	if [[ $success -ne 0 ]]; then
+		message_box error \
+		"Failed to find Mod Organizer 2, make sure it's running and try again!"
+		return 1
+	fi
+
+	mo2_env_vars=$(get_env_vars_from_pid "$mo2_pid")
+	mo2_cmdline=$(
+		get_cmdline_from_pid "$mo2_pid" | \
+		sed 's/waitforexitandrun/run/' # Hack to fix Proton.
+	)
+
+	export_env_var "$mo2_env_vars" STEAM_COMPAT_CLIENT_INSTALL_PATH
+	export_env_var "$mo2_env_vars" STEAM_COMPAT_DATA_PATH
+	export_env_var "$mo2_env_vars" WINEPREFIX
+
+	eval "$mo2_cmdline '$url'"
+}
+
+find_mo2() {
+	# Finds the first process id that started ModOrganizer.exe, which may be
+	# Wine or Proton.
+
+	local pid
+	pid=$(pgrep -f ModOrganizer.exe | head -n 1)
+
+	if [[ -z "$pid" ]]; then
+		return 1
+	fi
+
+	echo "$pid"
+}
+
+get_cmdline_from_pid() {
+	# Usage: get_cmdline_from_pid <process_id>
+	#
+	# Gets a sanitized command line for a given process id.
+	# Spaces are escaped by quoting each argument.
+
+	sed -E -e 's/.*--//g' < "/proc/$1/cmdline" | \
+	strings -n 1 | \
+	while read -r line; do
+		printf "'%s' " "$line"
+	done
+}
+
+get_env_vars_from_pid() {
+	# Usage: get_env_vars_from_pid <process_id>
+	#
+	# Emits a list of environment variables for a given process id separated by
+	# newlines.
+
+	strings < "/proc/$1/environ"
+}
+
+export_env_var() {\
+	# Usage: export_env_var <variables> <name>
+	#
+	# Takes a list of variable assignments split by newlines and exports the one
+	# that matches a given name.
+
+	local var=$2
+	eval "$var=$(sed -nE -e "s/^$2=(.*)/\1/p" <<< "$1")"
+	echo "$var=${!var}"
+	export "${var?}"
+}
+
+message_box() {
+	# Usage: message_box [info | error] <text>
+
+	if [[ -z "$2" ]]; then
+		set -- 'info' "$1"
+	fi
+
+	case "$XDG_CURRENT_DESKTOP" in
+		'KDE' | 'LXQt')
+			try_kdialog "$@" || try_zenity "$@" || console_log "$@"
+			;;
+		*)
+			try_zenity "$@" || try_kdialog "$@" || console_log "$@"
+			;;
+	esac
+}
+
+try_kdialog() {
+	if ! type kdialog &>/dev/null; then
+		return 1
+	fi
+
+	read -ra flags < <(get_kdialog_flags "$1")
+	kdialog --title "$title" "${flags[@]}" "$2"
+}
+
+get_kdialog_flags() {
+	case "$1" in
+		'error') echo '--error' ;;
+		*) echo '--msgbox' ;;
+	esac
+}
+
+try_zenity() {
+	if type zenity &>/dev/null; then
+		return 1
+	fi
+
+	read -ra flags < <(get_zenity_flags "$1")
+	zenity --title "$title" "${flags[@]}" "$2"
+}
+
+get_zenity_flags() {
+	case "$1" in
+		'error') echo '--error --text' ;;
+		*) echo '--info --text' ;;
+	esac
+}
+
+console_log() {
+	echo "$1: $2"
+}
+
+main "$@"

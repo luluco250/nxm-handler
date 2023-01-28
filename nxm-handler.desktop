@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Nexus Mods Scheme Handler
+Exec=%PREFIX%/nxm-handler %u
+StartupNotify=false
+MimeType=x-scheme-handler/nxm
