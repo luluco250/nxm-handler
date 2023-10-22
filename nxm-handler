@@ -1,14 +1,13 @@
 #!/bin/bash
 
-# This script tries to find an instance of Mod Organizer 2 running on Wine/Proton,
-# then calls it again passing the nxm:// link so it starts downloading.
-
 main() {
+	# Redirect all output to a log file.
+	exec > /tmp/nxm-handler.log 2>&1
+
 	local title
 	local url
 	local mo2_pid
 	local mo2_cmdline
-	local mo2_env_vars
 	local success
 
 	title=$(basename "$0")
@@ -28,15 +27,21 @@ main() {
 		return 1
 	fi
 
-	mo2_env_vars=$(get_env_vars_from_pid "$mo2_pid")
-	mo2_cmdline=$(
-		get_cmdline_from_pid "$mo2_pid" | \
-		sed 's/waitforexitandrun/run/' # Hack to fix Proton.
-	)
+	source_mo2_env_vars "$mo2_pid"
 
-	export_env_var "$mo2_env_vars" STEAM_COMPAT_CLIENT_INSTALL_PATH
-	export_env_var "$mo2_env_vars" STEAM_COMPAT_DATA_PATH
-	export_env_var "$mo2_env_vars" WINEPREFIX
+	if [ -n "$STEAM_COMPAT_DATA_PATH" ]; then
+		# Original method that works for Steam.
+		mo2_cmdline=$(get_mo2_cmdline "$mo2_pid" | sed 's/waitforexitandrun/run/')
+	else
+		# With Wine the command line seems to be incomplete, only containing the path
+		# to the exe, rather than including the wine binary, so we'll get it from the
+		# WINELOADER environment variable and insert it manually
+		mo2_cmdline=$(
+			tr '\0' ' ' < "/proc/$mo2_pid/cmdline" |
+			sed 's/\s*$//'
+		)
+		mo2_cmdline="'$WINELOADER' '$mo2_cmdline'"
+	fi
 
 	eval "$mo2_cmdline '$url'"
 }
@@ -46,7 +51,7 @@ find_mo2() {
 	# Wine or Proton.
 
 	local pid
-	pid=$(pgrep -f ModOrganizer.exe | head -n 1)
+	pid=$(pgrep -f ModOrganizer.exe | tail -n 1)
 
 	if [[ -z "$pid" ]]; then
 		return 1
@@ -55,7 +60,7 @@ find_mo2() {
 	echo "$pid"
 }
 
-get_cmdline_from_pid() {
+get_mo2_cmdline() {
 	# Usage: get_cmdline_from_pid <process_id>
 	#
 	# Gets a sanitized command line for a given process id.
@@ -68,26 +73,25 @@ get_cmdline_from_pid() {
 	done
 }
 
-get_env_vars_from_pid() {
-	# Usage: get_env_vars_from_pid <process_id>
+source_mo2_env_vars() {
+	# Usage: source_mo2_env_vars <process_id>
 	#
-	# Emits a list of environment variables for a given process id separated by
-	# newlines.
+	# Loads and re-exports variables used by the MO2 process..
 
+	# We'll sanitize the env vars by converting the null separators to newlines
+	# and then quoting the values.
+	eval "$(tr '\0' '\n' < "/proc/$1/environ" | sed "s/=\(.*\)\$/='\1'/")"
+	export STEAM_COMPAT_CLIENT_INSTALL_PATH
+	export STEAM_COMPAT_DATA_PATH
+	export WINEPREFIX
+	export WINEFSYNC
+}
+
+get_mo2_env_vars() {
 	strings < "/proc/$1/environ"
 }
 
-export_env_var() {\
-	# Usage: export_env_var <variables> <name>
-	#
-	# Takes a list of variable assignments split by newlines and exports the one
-	# that matches a given name.
 
-	local var=$2
-	eval "$var=$(sed -nE -e "s/^$2=(.*)/\1/p" <<< "$1")"
-	echo "$var=${!var}"
-	export "${var?}"
-}
 
 message_box() {
 	# Usage: message_box [info | error] <text>
